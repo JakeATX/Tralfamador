@@ -1,0 +1,21 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+*.egg-info/
+
+# Local recovery outputs and HTTP caches. These may contain archived page bodies,
+# manifests, headers, and machine-specific output paths from older runs.
+data/
+data_*/
+*_cache/
+http_cache/
+articles/
+catalog/
+audit/
+*.jsonl
+RUN_SUMMARY.md
+RETRY_SUMMARY.md
+AUDIT_SUMMARY.md
