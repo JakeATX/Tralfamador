@@ -30,7 +30,7 @@ Run a full-year catalog recovery:
 ```bash
 tralfamador \
   --out data/example-news-2021 \
-  --user-agent "tralfamador/0.1 (research archive recovery; contact: you@example.org)" \
+  --user-agent "tralfamador/0.1.1 (research archive recovery; contact: you@example.org)" \
   catalog-year-html \
   --root-url https://example.org/news/ \
   --year 2021
@@ -70,6 +70,21 @@ The default candidate regex is intentionally broad: it looks for same-site paths
 with hyphenated final slugs. For a new publication, run a small probe first and
 then tighten `--candidate-regex` to match that site's article URL shape.
 
+## Internet Archive Access Policy
+
+Tralfamador is intentionally conservative by default:
+
+- Single-threaded requests only.
+- `--delay` defaults to `4` seconds between HTTP requests.
+- HTTP responses are cached under `http_cache/` to avoid repeat downloads.
+- Transient errors retry with exponential backoff.
+- `429 Too Many Requests` responses honor `Retry-After` before continuing.
+- `--user-agent` should identify your project and include a contact address for
+  sustained or large recovery work.
+
+Do not lower `--delay` or run concurrent copies unless you have coordinated with
+Internet Archive or are doing a very small interactive probe.
+
 ## Probe
 
 ```bash
@@ -90,6 +105,22 @@ tralfamador \
   --manifest data/example-news-2021/article_manifest.jsonl
 ```
 
+## Resume An Interrupted Run
+
+If a full-year run completed catalog discovery but stopped during article
+recovery, resume from the discovered link manifest:
+
+```bash
+tralfamador \
+  --out data/example-news-2021 \
+  resume-discovered-html \
+  --candidates data/example-news-2021/discovered_links.jsonl
+```
+
+By default this skips URLs already recovered in `article_manifest.jsonl` and
+retries earlier failures. Add `--skip-attempted` to skip every URL already
+present in the manifest, including failures.
+
 ## Audit Outputs
 
 ```bash
@@ -104,7 +135,7 @@ tralfamador \
 ```bash
 tralfamador \
   --out data/fivethirtyeight-politics-2021 \
-  --user-agent "tralfamador/0.1 (research archive recovery; contact: you@example.org)" \
+  --user-agent "tralfamador/0.1.1 (research archive recovery; contact: you@example.org)" \
   catalog-year-html \
   --root-url https://fivethirtyeight.com/politics/ \
   --year 2021

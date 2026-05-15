@@ -54,6 +54,25 @@ class TralfamadorTests(unittest.TestCase):
             "articles/2021-01/story.html",
         )
 
+    def test_resume_command_is_available(self) -> None:
+        parser = tralfamador.build_parser()
+        args = parser.parse_args(
+            [
+                "--out",
+                "data/example",
+                "resume-discovered-html",
+                "--candidates",
+                "data/example/discovered_links.jsonl",
+            ]
+        )
+        self.assertEqual(args.func, tralfamador.resume_discovered_html)
+        self.assertTrue(args.skip_recovered)
+
+    def test_cli_default_delay_is_conservative_for_archive_access(self) -> None:
+        parser = tralfamador.build_parser()
+        args = parser.parse_args(["probe", "--root-url", "https://example.org/news/"])
+        self.assertEqual(args.delay, 4.0)
+
 
 if __name__ == "__main__":
     unittest.main()

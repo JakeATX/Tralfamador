@@ -25,8 +25,9 @@ import requests
 
 
 CDX_URL = "https://web.archive.org/cdx/search/cdx"
+DEFAULT_REQUEST_DELAY = 4.0
 DEFAULT_USER_AGENT = (
-    "tralfamador/0.1 "
+    "tralfamador/0.1.1 "
     "(Wayback recovery research; set contact with --user-agent)"
 )
 DEFAULT_PREFIXES: list[str] = []
@@ -82,7 +83,7 @@ class PoliteSession:
         self,
         cache_dir: Path,
         user_agent: str = DEFAULT_USER_AGENT,
-        delay: float = 1.0,
+        delay: float = DEFAULT_REQUEST_DELAY,
         timeout: float = 45.0,
     ) -> None:
         self.cache_dir = cache_dir
@@ -1308,6 +1309,50 @@ def retry_manifest_html(args: argparse.Namespace) -> None:
     write_retry_summary(out_dir, retry_rows, retry_path)
 
 
+def resume_discovered_html(args: argparse.Namespace) -> None:
+    out_dir = Path(args.out)
+    session = PoliteSession(out_dir / "http_cache", delay=args.delay, user_agent=args.user_agent)
+    candidates_path = Path(args.candidates)
+    manifest_path = Path(args.manifest) if args.manifest else out_dir / "article_manifest.jsonl"
+    candidates = [row for row in read_jsonl(candidates_path) if row.get("url")]
+    existing_rows = read_jsonl(manifest_path)
+    recovered_urls = {row["url"] for row in existing_rows if row.get("url") and row.get("status") == "recovered"}
+    attempted_urls = {row["url"] for row in existing_rows if row.get("url")}
+
+    pending = []
+    for candidate in candidates:
+        url = candidate["url"]
+        if args.skip_recovered and url in recovered_urls:
+            continue
+        if args.skip_attempted and url in attempted_urls:
+            continue
+        pending.append(candidate)
+    if args.max_urls:
+        pending = pending[: args.max_urls]
+
+    print(
+        f"[resume] candidates={len(candidates)} existing={len(existing_rows)} pending={len(pending)}",
+        file=sys.stderr,
+    )
+    for idx, candidate in enumerate(pending, 1):
+        url = candidate["url"]
+        print(f"[resume] {idx}/{len(pending)} {url}", file=sys.stderr)
+        article, manifest = recover_article_record(
+            session,
+            url,
+            latest_limit=args.latest_limit,
+            from_ts=args.article_from,
+            to_ts=args.article_to,
+        )
+        manifest["source"] = candidate
+        manifest["resumed_at"] = now_iso()
+        if article:
+            article["candidate_source"] = candidate
+            output_path = save_article_html(out_dir, article)
+            manifest["output_path"] = portable_output_path(out_dir, output_path)
+        jsonl_append(manifest_path, manifest)
+
+
 def recover_articles(args: argparse.Namespace) -> None:
     out_dir = Path(args.out)
     session = PoliteSession(out_dir / "http_cache", delay=args.delay, user_agent=args.user_agent)
@@ -1376,7 +1421,15 @@ def probe(args: argparse.Namespace) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", default="data")
-    parser.add_argument("--delay", type=float, default=1.0)
+    parser.add_argument(
+        "--delay",
+        type=float,
+        default=DEFAULT_REQUEST_DELAY,
+        help=(
+            "Seconds to wait between HTTP requests. Default is conservative "
+            f"({DEFAULT_REQUEST_DELAY:g}s) for Internet Archive bulk access."
+        ),
+    )
     parser.add_argument("--timeout", type=float, default=45.0)
     parser.add_argument("--user-agent", default=DEFAULT_USER_AGENT)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1443,6 +1496,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_retry.add_argument("--article-to", default=None)
     p_retry.add_argument("--max-urls", type=int, default=0)
     p_retry.set_defaults(func=retry_manifest_html)
+
+    p_resume = sub.add_parser(
+        "resume-discovered-html",
+        help="Recover discovered_links.jsonl candidates into monthly HTML outputs, skipping existing successes.",
+    )
+    p_resume.add_argument("--candidates", default="data/discovered_links.jsonl")
+    p_resume.add_argument("--manifest", default=None)
+    p_resume.add_argument("--latest-limit", type=int, default=60)
+    p_resume.add_argument("--article-from", default=None)
+    p_resume.add_argument("--article-to", default=None)
+    p_resume.add_argument("--max-urls", type=int, default=0)
+    p_resume.add_argument("--skip-recovered", action=argparse.BooleanOptionalAction, default=True)
+    p_resume.add_argument("--skip-attempted", action=argparse.BooleanOptionalAction, default=False)
+    p_resume.set_defaults(func=resume_discovered_html)
 
     p_audit = sub.add_parser(
         "audit-catalog-output",
