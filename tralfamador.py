@@ -25,6 +25,7 @@ import requests
 
 
 CDX_URL = "https://web.archive.org/cdx/search/cdx"
+AVAILABILITY_URL = "https://archive.org/wayback/available"
 DEFAULT_REQUEST_DELAY = 4.0
 DEFAULT_USER_AGENT = (
     "tralfamador/0.1.1 "
@@ -85,10 +86,12 @@ class PoliteSession:
         user_agent: str = DEFAULT_USER_AGENT,
         delay: float = DEFAULT_REQUEST_DELAY,
         timeout: float = 45.0,
+        retries: int = 5,
     ) -> None:
         self.cache_dir = cache_dir
         self.delay = delay
         self.timeout = timeout
+        self.retries = retries
         self.last_request = 0.0
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": user_agent})
@@ -107,7 +110,7 @@ class PoliteSession:
         if elapsed < self.delay:
             time.sleep(self.delay - elapsed)
 
-        retries = 5
+        retries = max(1, self.retries)
         last_error: Exception | None = None
         for attempt in range(retries):
             self.last_request = time.monotonic()
@@ -142,7 +145,7 @@ class PoliteSession:
         raise RuntimeError(f"request failed after retries: {url}")
 
 
-def make_cdx_url(params: dict[str, Any]) -> str:
+def make_url(base_url: str, params: dict[str, Any]) -> str:
     pairs: list[tuple[str, str]] = []
     for key, value in params.items():
         if value is None:
@@ -152,7 +155,11 @@ def make_cdx_url(params: dict[str, Any]) -> str:
                 pairs.append((key, str(item)))
         else:
             pairs.append((key, str(value)))
-    return CDX_URL + "?" + urlencode(pairs)
+    return base_url + "?" + urlencode(pairs)
+
+
+def make_cdx_url(params: dict[str, Any]) -> str:
+    return make_url(CDX_URL, params)
 
 
 def cdx_query(session: PoliteSession, params: dict[str, Any]) -> list[dict[str, str]]:
@@ -588,7 +595,13 @@ def resolve_manifest_output_path(run_dir: Path, value: str) -> Path:
 
 def discover_catalogs(args: argparse.Namespace) -> None:
     out_dir = Path(args.out)
-    session = PoliteSession(out_dir / "http_cache", delay=args.delay, user_agent=args.user_agent)
+    session = PoliteSession(
+        out_dir / "http_cache",
+        delay=args.delay,
+        user_agent=args.user_agent,
+        timeout=args.timeout,
+        retries=args.retries,
+    )
     prefixes = args.prefix or DEFAULT_PREFIXES
     if not prefixes:
         raise ValueError("discover-catalogs requires at least one --prefix")
@@ -660,7 +673,13 @@ def discover_catalogs(args: argparse.Namespace) -> None:
 
 def discover_cdx_urls(args: argparse.Namespace) -> None:
     out_dir = Path(args.out)
-    session = PoliteSession(out_dir / "http_cache", delay=args.delay, user_agent=args.user_agent)
+    session = PoliteSession(
+        out_dir / "http_cache",
+        delay=args.delay,
+        user_agent=args.user_agent,
+        timeout=args.timeout,
+        retries=args.retries,
+    )
     prefixes = args.prefix or DEFAULT_PREFIXES
     if not prefixes:
         raise ValueError("discover-cdx-urls requires at least one --prefix")
@@ -755,6 +774,30 @@ def latest_captures_for_url(
     return sorted(rows, key=lambda row: row["timestamp"], reverse=True)
 
 
+def availability_capture_for_url(
+    session: PoliteSession,
+    url: str,
+    to_ts: str | None = None,
+) -> list[dict[str, str]]:
+    timestamp = to_ts or "99999999999999"
+    text, _ = session.get_text(make_url(AVAILABILITY_URL, {"url": url, "timestamp": timestamp}))
+    data = json.loads(text)
+    closest = (data.get("archived_snapshots") or {}).get("closest") or {}
+    if not closest.get("available") or closest.get("status") != "200" or not closest.get("timestamp"):
+        return []
+    return [
+        {
+            "timestamp": str(closest["timestamp"]),
+            "original": url,
+            "statuscode": str(closest.get("status", "200")),
+            "mimetype": "text/html",
+            "digest": "",
+            "length": "",
+            "source": "availability",
+        }
+    ]
+
+
 def catalog_captures_for_range(
     session: PoliteSession,
     root_url: str,
@@ -787,6 +830,7 @@ def recover_article_record(
     latest_limit: int,
     from_ts: str | None = None,
     to_ts: str | None = None,
+    latest_strategy: str = "cdx",
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     manifest: dict[str, Any] = {
         "url": url,
@@ -795,13 +839,16 @@ def recover_article_record(
         "captures_checked": [],
     }
     try:
-        captures = latest_captures_for_url(
-            session,
-            url,
-            latest_limit=latest_limit,
-            from_ts=from_ts,
-            to_ts=to_ts,
-        )
+        if latest_strategy == "availability":
+            captures = availability_capture_for_url(session, url, to_ts=to_ts)
+        else:
+            captures = latest_captures_for_url(
+                session,
+                url,
+                latest_limit=latest_limit,
+                from_ts=from_ts,
+                to_ts=to_ts,
+            )
     except Exception as exc:
         manifest["status"] = "cdx_error"
         manifest["error"] = str(exc)
@@ -1110,6 +1157,7 @@ def audit_catalog_output(args: argparse.Namespace) -> None:
             delay=args.delay,
             user_agent=args.user_agent,
             timeout=args.timeout,
+            retries=args.retries,
         )
         direct = direct_cdx_inventory(
             session=session,
@@ -1146,7 +1194,13 @@ def audit_catalog_output(args: argparse.Namespace) -> None:
 
 def catalog_year_to_html(args: argparse.Namespace) -> None:
     out_dir = Path(args.out)
-    session = PoliteSession(out_dir / "http_cache", delay=args.delay, user_agent=args.user_agent)
+    session = PoliteSession(
+        out_dir / "http_cache",
+        delay=args.delay,
+        user_agent=args.user_agent,
+        timeout=args.timeout,
+        retries=args.retries,
+    )
     root_url = normalize_url_for_root(args.root_url, args.root_url)
     if not root_url:
         raise ValueError(f"invalid --root-url: {args.root_url}")
@@ -1256,6 +1310,7 @@ def catalog_year_to_html(args: argparse.Namespace) -> None:
             latest_limit=args.latest_limit,
             from_ts=args.article_from,
             to_ts=args.article_to,
+            latest_strategy=args.latest_strategy,
         )
         manifest["source"] = candidate
         if article:
@@ -1278,7 +1333,13 @@ def catalog_year_to_html(args: argparse.Namespace) -> None:
 
 def retry_manifest_html(args: argparse.Namespace) -> None:
     out_dir = Path(args.out)
-    session = PoliteSession(out_dir / "http_cache", delay=args.delay, user_agent=args.user_agent)
+    session = PoliteSession(
+        out_dir / "http_cache",
+        delay=args.delay,
+        user_agent=args.user_agent,
+        timeout=args.timeout,
+        retries=args.retries,
+    )
     manifest_path = Path(args.manifest)
     rows = read_jsonl(manifest_path)
     retry_path = out_dir / "article_manifest_retry.jsonl"
@@ -1296,6 +1357,7 @@ def retry_manifest_html(args: argparse.Namespace) -> None:
             latest_limit=args.latest_limit,
             from_ts=args.article_from,
             to_ts=args.article_to,
+            latest_strategy=args.latest_strategy,
         )
         retry["previous_status"] = failed.get("status")
         retry["previous_error"] = failed.get("error")
@@ -1311,7 +1373,13 @@ def retry_manifest_html(args: argparse.Namespace) -> None:
 
 def resume_discovered_html(args: argparse.Namespace) -> None:
     out_dir = Path(args.out)
-    session = PoliteSession(out_dir / "http_cache", delay=args.delay, user_agent=args.user_agent)
+    session = PoliteSession(
+        out_dir / "http_cache",
+        delay=args.delay,
+        user_agent=args.user_agent,
+        timeout=args.timeout,
+        retries=args.retries,
+    )
     candidates_path = Path(args.candidates)
     manifest_path = Path(args.manifest) if args.manifest else out_dir / "article_manifest.jsonl"
     candidates = [row for row in read_jsonl(candidates_path) if row.get("url")]
@@ -1343,6 +1411,7 @@ def resume_discovered_html(args: argparse.Namespace) -> None:
             latest_limit=args.latest_limit,
             from_ts=args.article_from,
             to_ts=args.article_to,
+            latest_strategy=args.latest_strategy,
         )
         manifest["source"] = candidate
         manifest["resumed_at"] = now_iso()
@@ -1355,7 +1424,13 @@ def resume_discovered_html(args: argparse.Namespace) -> None:
 
 def recover_articles(args: argparse.Namespace) -> None:
     out_dir = Path(args.out)
-    session = PoliteSession(out_dir / "http_cache", delay=args.delay, user_agent=args.user_agent)
+    session = PoliteSession(
+        out_dir / "http_cache",
+        delay=args.delay,
+        user_agent=args.user_agent,
+        timeout=args.timeout,
+        retries=args.retries,
+    )
     article_dir = out_dir / "articles"
     ensure_dir(article_dir)
     candidates = read_jsonl(Path(args.candidates))
@@ -1372,6 +1447,7 @@ def recover_articles(args: argparse.Namespace) -> None:
             latest_limit=args.latest_limit,
             from_ts=args.from_ts,
             to_ts=args.to_ts,
+            latest_strategy=args.latest_strategy,
         )
         manifest["source"] = candidate
         if article:
@@ -1384,7 +1460,13 @@ def recover_articles(args: argparse.Namespace) -> None:
 
 def probe(args: argparse.Namespace) -> None:
     out_dir = Path(args.out)
-    session = PoliteSession(out_dir / "http_cache", delay=args.delay, user_agent=args.user_agent)
+    session = PoliteSession(
+        out_dir / "http_cache",
+        delay=args.delay,
+        user_agent=args.user_agent,
+        timeout=args.timeout,
+        retries=args.retries,
+    )
     section_url = args.root_url
     rows = cdx_query(
         session,
@@ -1431,6 +1513,12 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--timeout", type=float, default=45.0)
+    parser.add_argument(
+        "--retries",
+        type=int,
+        default=5,
+        help="HTTP attempts per uncached request before recording a failure.",
+    )
     parser.add_argument("--user-agent", default=DEFAULT_USER_AGENT)
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -1479,6 +1567,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_year.add_argument("--include-subdomains", action="store_true")
     p_year.add_argument("--catalog-limit", type=int, default=5000)
     p_year.add_argument("--latest-limit", type=int, default=60)
+    p_year.add_argument("--latest-strategy", choices=["cdx", "availability"], default="cdx")
     p_year.add_argument("--article-from", default=None)
     p_year.add_argument("--article-to", default=None)
     p_year.add_argument("--candidate-regex", default=DEFAULT_CANDIDATE_REGEX)
@@ -1492,6 +1581,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_retry.add_argument("--manifest", required=True)
     p_retry.add_argument("--latest-limit", type=int, default=60)
+    p_retry.add_argument("--latest-strategy", choices=["cdx", "availability"], default="cdx")
     p_retry.add_argument("--article-from", default=None)
     p_retry.add_argument("--article-to", default=None)
     p_retry.add_argument("--max-urls", type=int, default=0)
@@ -1504,6 +1594,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_resume.add_argument("--candidates", default="data/discovered_links.jsonl")
     p_resume.add_argument("--manifest", default=None)
     p_resume.add_argument("--latest-limit", type=int, default=60)
+    p_resume.add_argument("--latest-strategy", choices=["cdx", "availability"], default="cdx")
     p_resume.add_argument("--article-from", default=None)
     p_resume.add_argument("--article-to", default=None)
     p_resume.add_argument("--max-urls", type=int, default=0)
@@ -1534,6 +1625,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_recover.add_argument("--from", dest="from_ts", default=None)
     p_recover.add_argument("--to", dest="to_ts", default=None)
     p_recover.add_argument("--latest-limit", type=int, default=40)
+    p_recover.add_argument("--latest-strategy", choices=["cdx", "availability"], default="cdx")
     p_recover.add_argument("--max-urls", type=int, default=0)
     p_recover.set_defaults(func=recover_articles)
     return parser

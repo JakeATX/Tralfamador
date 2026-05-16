@@ -121,6 +121,23 @@ By default this skips URLs already recovered in `article_manifest.jsonl` and
 retries earlier failures. Add `--skip-attempted` to skip every URL already
 present in the manifest, including failures.
 
+For a fast first pass over a large interrupted run, use the Wayback
+Availability endpoint to ask for one closest/latest snapshot per URL:
+
+```bash
+tralfamador \
+  --out data/example-news-2021 \
+  --timeout 10 \
+  --retries 1 \
+  resume-discovered-html \
+  --candidates data/example-news-2021/discovered_links.jsonl \
+  --latest-strategy availability \
+  --skip-attempted
+```
+
+Use the default CDX strategy for deeper retries, because it can walk backward
+through multiple captures when the newest snapshot is not valid article HTML.
+
 ## Audit Outputs
 
 ```bash

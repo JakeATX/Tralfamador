@@ -73,6 +73,32 @@ class TralfamadorTests(unittest.TestCase):
         args = parser.parse_args(["probe", "--root-url", "https://example.org/news/"])
         self.assertEqual(args.delay, 4.0)
 
+    def test_cli_retries_can_be_tuned_for_bulk_resume(self) -> None:
+        parser = tralfamador.build_parser()
+        args = parser.parse_args(
+            [
+                "--retries",
+                "1",
+                "resume-discovered-html",
+                "--candidates",
+                "data/example/discovered_links.jsonl",
+            ]
+        )
+        self.assertEqual(args.retries, 1)
+
+    def test_resume_can_use_availability_strategy(self) -> None:
+        parser = tralfamador.build_parser()
+        args = parser.parse_args(
+            [
+                "resume-discovered-html",
+                "--candidates",
+                "data/example/discovered_links.jsonl",
+                "--latest-strategy",
+                "availability",
+            ]
+        )
+        self.assertEqual(args.latest_strategy, "availability")
+
 
 if __name__ == "__main__":
     unittest.main()
